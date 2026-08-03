@@ -78,175 +78,153 @@ Produce the final answer as a **single markdown document** with the above five t
 - Justify every major decision with a brief “why”.
 - If the product idea is ambiguous, make reasonable assumptions and note them.
 
-Worked Example: Task Management App with Teams, Projects, and Real‑time Updates
-Product Idea:
+# Backend Blueprint: Task Management App (Worked Example)
+
+## Product Idea
 A multi‑tenant task management application where users can create teams, projects within teams, and tasks. Team members can assign tasks, add comments, and receive real‑time notifications when a task is updated.
 
-1. Tech Stack
-Language & Framework – Node.js + Express (TypeScript) for its non‑blocking I/O, great for real‑time features, and large ecosystem.
+---
 
-Database – PostgreSQL for ACID compliance, rich querying, and support for JSONB (to store flexible metadata). Use PostgreSQL’s LISTEN/NOTIFY for real‑time push.
+## 1. Tech Stack
 
-Caching – Redis for session caching, rate limiting, and as a pub/sub broker for real‑time events.
+- **Language & Framework** – **Node.js + Express (TypeScript)** for non‑blocking I/O, ideal for real‑time features, and a mature ecosystem.  
+- **Database** – **PostgreSQL** for ACID compliance, robust querying, and JSONB support. Use `LISTEN/NOTIFY` for real‑time push notifications.  
+- **Caching** – **Redis** for session caching, rate limiting, and as a pub/sub broker for real‑time events.  
+- **Message Queue / Background Jobs** – **Bull** (Redis‑based) for scheduled reminders and email notifications.  
+- **Other Services** – **SendGrid** (transactional emails), **AWS S3** (file attachments), **Socket.IO** (WebSockets for real‑time updates).
 
-Message Queue / Background Jobs – Bull (Redis‑based) for scheduled reminders and email notifications.
+---
 
-Other Services – SendGrid for transactional emails, AWS S3 for file attachments, Socket.IO (WebSockets) for real‑time updates.
+## 2. Database Schema
 
-2. Database Schema
-Entities (PostgreSQL tables):
+**Database**: PostgreSQL
 
-Table	Columns	Constraints & Indexes
-users	id (UUID, PK), email (text, unique), password_hash (text), full_name (text), created_at (timestamp), updated_at (timestamp)	Unique on email; index on email for login
-teams	id (UUID, PK), name (text), slug (text, unique), created_by (UUID → users.id), created_at, updated_at	Unique slug; index on slug
-team_members	team_id (UUID → teams.id), user_id (UUID → users.id), role (enum: admin, member, viewer), joined_at	Composite PK; index on team_id and user_id
-projects	id (UUID, PK), team_id (UUID → teams.id), name (text), description (text), created_by (UUID → users.id), created_at, updated_at	Index on team_id
-tasks	id (UUID, PK), project_id (UUID → projects.id), title (text), description (text), status (enum: backlog, todo, in_progress, review, done), priority (integer), due_date (timestamp), assigned_to (UUID → users.id), created_by (UUID → users.id), created_at, updated_at	Index on project_id, assigned_to, status, due_date
-comments	id (UUID, PK), task_id (UUID → tasks.id), user_id (UUID → users.id), content (text), created_at	Index on task_id
-attachments	id (UUID, PK), task_id (UUID → tasks.id), file_url (text), uploaded_by (UUID → users.id), created_at	Index on task_id
-notifications	id (UUID, PK), user_id (UUID → users.id), type (text), data (JSONB), read (boolean), created_at	Index on user_id and read
-Relationships:
+### Tables
 
-A team has many team_members and many projects.
+| Table | Columns | Constraints & Indexes |
+|-------|---------|------------------------|
+| **users** | `id` (UUID, PK), `email` (text, unique), `password_hash` (text), `full_name` (text), `created_at` (timestamp), `updated_at` (timestamp) | Unique email; index on email for login |
+| **teams** | `id` (UUID, PK), `name` (text), `slug` (text, unique), `created_by` (UUID → users.id), `created_at`, `updated_at` | Unique slug; index on slug |
+| **team_members** | `team_id` (UUID → teams.id), `user_id` (UUID → users.id), `role` (enum: admin, member, viewer), `joined_at` | Composite PK; index on team_id and user_id |
+| **projects** | `id` (UUID, PK), `team_id` (UUID → teams.id), `name` (text), `description` (text), `created_by` (UUID → users.id), `created_at`, `updated_at` | Index on team_id |
+| **tasks** | `id` (UUID, PK), `project_id` (UUID → projects.id), `title` (text), `description` (text), `status` (enum: backlog, todo, in_progress, review, done), `priority` (integer), `due_date` (timestamp), `assigned_to` (UUID → users.id), `created_by` (UUID → users.id), `created_at`, `updated_at` | Indexes on project_id, assigned_to, status, due_date |
+| **comments** | `id` (UUID, PK), `task_id` (UUID → tasks.id), `user_id` (UUID → users.id), `content` (text), `created_at` | Index on task_id |
+| **attachments** | `id` (UUID, PK), `task_id` (UUID → tasks.id), `file_url` (text), `uploaded_by` (UUID → users.id), `created_at` | Index on task_id |
+| **notifications** | `id` (UUID, PK), `user_id` (UUID → users.id), `type` (text), `data` (JSONB), `read` (boolean), `created_at` | Index on user_id and read |
 
-A project belongs to one team and has many tasks.
+### Relationships
 
-A task belongs to one project, has optional assigned_to user, and has many comments and attachments.
+- A `team` has many `team_members` and many `projects`.  
+- A `project` belongs to one `team` and has many `tasks`.  
+- A `task` belongs to one `project`, may have an `assigned_to` user, and has many `comments`/`attachments`.  
+- `notifications` are scoped per user.
 
-Notifications are per user.
+**Additional Indexes**: Add composite indexes for frequent queries, e.g., `(team_id, project_id)` for listing projects within a team.
 
-Indexes: Add composite indexes for frequent queries (e.g., (team_id, project_id) for listing projects in a team).
+---
 
-3. API Endpoints
-Architecture: RESTful with WebSocket (Socket.IO) for real‑time events.
+## 3. API Endpoints
 
-Authentication: All endpoints require a valid JWT token in the Authorization header (except login/signup).
+- **Architecture**: RESTful API with WebSocket (Socket.IO) for real‑time events.  
+- **Authentication**: All endpoints (except register/login) require a valid JWT token in the `Authorization` header.
 
-Method & Path	Request Body / Params	Response (success)	Description
-Auth			
-POST /api/auth/register	{ email, password, fullName }	{ user: { id, email, fullName }, token }	Register new user
-POST /api/auth/login	{ email, password }	{ token, user }	Login
-Teams			
-POST /api/teams	{ name, slug }	{ team }	Create team (creator becomes admin)
-GET /api/teams	(query: ?page=1&limit=20)	{ teams: [], total }	List teams the user belongs to
-GET /api/teams/:teamId	–	{ team }	Get team details
-PUT /api/teams/:teamId	{ name, slug }	{ team }	Update team (admin only)
-DELETE /api/teams/:teamId	–	{ message }	Delete team (admin only)
-POST /api/teams/:teamId/members	{ userEmail, role }	{ member }	Add member to team (admin only)
-DELETE /api/teams/:teamId/members/:userId	–	{ message }	Remove member
-Projects			
-POST /api/teams/:teamId/projects	{ name, description }	{ project }	Create project (team member)
-GET /api/teams/:teamId/projects	(query: ?page=1&limit=20)	{ projects: [], total }	List projects in team
-GET /api/projects/:projectId	–	{ project }	Get project details
-PUT /api/projects/:projectId	{ name, description }	{ project }	Update project (team member)
-DELETE /api/projects/:projectId	–	{ message }	Delete project (admin only)
-Tasks			
-POST /api/projects/:projectId/tasks	{ title, description, status, priority, dueDate, assignedTo? }	{ task }	Create task
-GET /api/projects/:projectId/tasks	query: ?status=…&assignedTo=…&page=1&limit=20	{ tasks: [], total }	List tasks with filters
-GET /api/tasks/:taskId	–	{ task }	Get task details
-PUT /api/tasks/:taskId	{ title, description, status, priority, dueDate, assignedTo }	{ task }	Update task (partial updates allowed)
-DELETE /api/tasks/:taskId	–	{ message }	Delete task
-POST /api/tasks/:taskId/comments	{ content }	{ comment }	Add comment
-GET /api/tasks/:taskId/comments	–	{ comments: [] }	List comments
-POST /api/tasks/:taskId/attachments	multipart/form-data with file	{ attachment: { fileUrl } }	Upload attachment
-Notifications			
-GET /api/notifications	query: ?read=false&page=1	{ notifications: [], total }	Get user’s notifications
-PUT /api/notifications/:id/read	–	{ notification }	Mark as read
-PUT /api/notifications/read-all	–	{ message }	Mark all as read
-WebSocket Events (Socket.IO):
+### REST Endpoints
 
-Client joins a room: joinTeam(teamId), joinTask(taskId).
+| Method & Path | Request Body / Params | Response (success) | Description |
+|---------------|-----------------------|--------------------|-------------|
+| **Auth** ||||
+| `POST /api/auth/register` | `{ email, password, fullName }` | `{ user: { id, email, fullName }, token }` | Register new user |
+| `POST /api/auth/login` | `{ email, password }` | `{ token, user }` | Login |
+| **Teams** ||||
+| `POST /api/teams` | `{ name, slug }` | `{ team }` | Create team (creator becomes admin) |
+| `GET /api/teams` | Query: `?page=1&limit=20` | `{ teams: [], total }` | List teams user belongs to |
+| `GET /api/teams/:teamId` | – | `{ team }` | Get team details |
+| `PUT /api/teams/:teamId` | `{ name, slug }` | `{ team }` | Update team (admin only) |
+| `DELETE /api/teams/:teamId` | – | `{ message }` | Delete team (admin only) |
+| `POST /api/teams/:teamId/members` | `{ userEmail, role }` | `{ member }` | Add member (admin only) |
+| `DELETE /api/teams/:teamId/members/:userId` | – | `{ message }` | Remove member (admin only) |
+| **Projects** ||||
+| `POST /api/teams/:teamId/projects` | `{ name, description }` | `{ project }` | Create project (team member) |
+| `GET /api/teams/:teamId/projects` | Query: `?page=1&limit=20` | `{ projects: [], total }` | List projects in team |
+| `GET /api/projects/:projectId` | – | `{ project }` | Get project details |
+| `PUT /api/projects/:projectId` | `{ name, description }` | `{ project }` | Update project (team member) |
+| `DELETE /api/projects/:projectId` | – | `{ message }` | Delete project (admin only) |
+| **Tasks** ||||
+| `POST /api/projects/:projectId/tasks` | `{ title, description, status, priority, dueDate, assignedTo? }` | `{ task }` | Create task |
+| `GET /api/projects/:projectId/tasks` | Query: `?status=…&assignedTo=…&page=1&limit=20` | `{ tasks: [], total }` | List tasks with filters |
+| `GET /api/tasks/:taskId` | – | `{ task }` | Get task details |
+| `PUT /api/tasks/:taskId` | `{ title, description, status, priority, dueDate, assignedTo }` | `{ task }` | Update task (partial updates allowed) |
+| `DELETE /api/tasks/:taskId` | – | `{ message }` | Delete task |
+| `POST /api/tasks/:taskId/comments` | `{ content }` | `{ comment }` | Add comment |
+| `GET /api/tasks/:taskId/comments` | – | `{ comments: [] }` | List comments |
+| `POST /api/tasks/:taskId/attachments` | Multipart/form-data with file | `{ attachment: { fileUrl } }` | Upload attachment |
+| **Notifications** ||||
+| `GET /api/notifications` | Query: `?read=false&page=1` | `{ notifications: [], total }` | Get user’s notifications |
+| `PUT /api/notifications/:id/read` | – | `{ notification }` | Mark as read |
+| `PUT /api/notifications/read-all` | – | `{ message }` | Mark all as read |
 
-Server emits: taskUpdated(taskData), commentAdded(commentData), notification(notificationData).
+### WebSocket Events (Socket.IO)
 
-4. Authentication & Authorization
-Auth mechanism: JWT (stateless) with short‑lived access tokens (15 min) and refresh tokens (7 days) stored in HTTP‑only cookies for enhanced security.
+- Client joins rooms: `joinTeam(teamId)`, `joinTask(taskId)`  
+- Server emits: `taskUpdated(taskData)`, `commentAdded(commentData)`, `notification(notificationData)`
 
-Password hashing: bcrypt with salt rounds = 12.
+---
 
-User roles (per team):
+## 4. Authentication & Authorization
 
-admin – full team management, delete projects, manage members.
+- **Auth Mechanism**: **JWT** – stateless access tokens (15 min expiry) + refresh tokens (7 days) stored in HTTP‑only cookies for security.  
+- **Password Hashing**: **bcrypt** with salt rounds = 12.  
+- **User Roles** (per team):
+  - `admin` – full team management, delete projects, manage members.
+  - `member` – create/update tasks, add comments.
+  - `viewer` – read‑only access.
+- **Authorization Logic** – Middleware that:
+  1. Validates JWT and extracts user ID.
+  2. For team‑scoped routes, ensures user is a member of that team.
+  3. For project/task actions, verifies the user belongs to the project’s team.
+  4. For destructive writes, checks role permission (admin required).
+- **Rate Limiting**: `express‑rate‑limit` with Redis store – 100 req/min per user (general), 5 req/min for auth endpoints.
+- **CORS**: Restrict to allowed frontend domains.
+- **Input Validation**: Use **Joi** or **class‑validator** to sanitize and validate all payloads.
 
-member – can create/update tasks, add comments.
+---
 
-viewer – read‑only access.
+## 5. Deployment Notes
 
-Authorization logic: A middleware checks:
+### Environment Variables
 
-Valid JWT and extracts user ID.
-For team‑scoped routes (e.g., /teams/:teamId/...), ensure the user is a member of that team.
-For project/task actions, verify the user belongs to the project’s team.
-For write/modify operations, check the role against required permission (admin for destructive actions).
-Rate limiting: Implement express‑rate‑limit with Redis store – 100 requests per minute per user for most endpoints; stricter for authentication (5 per minute).
 
-CORS: Restrict to allowed frontend domains.
+### Containerization
+- Multi‑stage **Dockerfile** with Node.js Alpine image.
+- `docker‑compose.yml` for local development (app, postgres, redis, pgadmin).
 
-Input validation: Use Joi or class‑validator to sanitize and validate all inputs.
+### CI/CD
+- **GitHub Actions** workflow on push to `main`:
+  - Run tests → Build Docker image → Push to **AWS ECR** → Deploy to **AWS ECS (Fargate)** with rolling updates.
 
-5. Deployment Notes
-Environment Variables:
+### Hosting (AWS)
+- **ECS Fargate** – serverless container orchestration.
+- **RDS for PostgreSQL** – Multi‑AZ for high availability.
+- **ElastiCache for Redis** – caching and pub/sub.
+- **S3** – file storage.
+- **CloudFront + S3** – static asset delivery.
+- **Application Load Balancer (ALB)** – traffic distribution.
 
-DATABASE_URL (PostgreSQL connection string)
+### Monitoring & Logging
+- **Prometheus + Grafana** – metrics (latency, error rates, DB pool).
+- **AWS CloudWatch** – logs and alarms.
+- **Sentry** – error tracking.
 
-REDIS_URL
+### Scaling
+- Stateless app servers → Horizontal scaling via ECS auto‑scaling (CPU/memory).
+- Database read replicas for read‑heavy workloads.
+- Redis clustering if pub/sub load increases.
 
-JWT_SECRET, REFRESH_TOKEN_SECRET
+### Backup & Recovery
+- RDS automated daily snapshots with 7‑day retention.
+- S3 versioning enabled for file backups.
+- Cross‑region replica for RDS and S3 as disaster recovery.
 
-SENDGRID_API_KEY
+---
 
-AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET
-
-CLIENT_URL (for CORS)
-
-PORT
-
-Containerization:
-
-Multi‑stage Dockerfile with Node.js alpine.
-
-Use docker‑compose.yml for local development (app, postgres, redis, pgadmin).
-
-CI/CD:
-
-GitHub Actions workflow: on push to main, run tests, build Docker image, push to AWS ECR, and deploy to AWS ECS (Fargate) with rolling updates.
-
-Hosting:
-
-AWS:
-
-ECS Fargate for container orchestration (serverless).
-
-RDS for PostgreSQL with Multi‑AZ for high availability.
-
-ElastiCache for Redis for caching and pub/sub.
-
-S3 for file storage.
-
-CloudFront + S3 for serving static assets.
-
-Application Load Balancer (ALB) for distributing traffic.
-
-Monitoring & Logging:
-
-Prometheus + Grafana for metrics (request latency, error rates, DB connection pool).
-
-AWS CloudWatch for logs and alarms.
-
-Sentry for error tracking.
-
-Scaling:
-
-Stateless app servers ⇒ horizontal scaling via ECS service auto‑scaling based on CPU/memory.
-
-Database read replicas for read‑heavy workloads.
-
-Redis clustering if pub/sub load grows.
-
-Backup & Recovery:
-
-RDS automated daily snapshots with 7‑day retention.
-
-S3 versioning enabled for file backups.
-
-Disaster recovery: cross‑region replica of RDS and S3.
+*This blueprint can be adapted to other product ideas by substituting the domain entities and adjusting integrations.*
